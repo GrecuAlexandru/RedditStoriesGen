@@ -32,10 +32,12 @@ class RedditShortEngine:
         language: Language = Language.ENGLISH,
         story_title: str = None,
         story_content: str = None,
+        pre_generated_audio_path: str = None,
     ):
         self.voiceModule = voiceModule
         self.short_id = short_id
-        self.language = language.value if isinstance(language, Language) else language
+        self.language = language.value if isinstance(
+            language, Language) else language
 
         # Database attributes with prefix _db_ to store state
         self._db_background_video_name = background_video_name
@@ -44,6 +46,7 @@ class RedditShortEngine:
         self._db_language = self.language
         self._db_story_title = story_title
         self._db_story_content = story_content
+        self._db_pre_generated_audio_path = pre_generated_audio_path
 
         # Initialize other attributes
         self._db_script = ""
@@ -142,7 +145,8 @@ class RedditShortEngine:
             safe_content = story_content.encode("ascii", errors="ignore").decode(
                 "ascii"
             )
-            print(f"[Content with Unicode characters filtered]: {safe_content}")
+            print(
+                f"[Content with Unicode characters filtered]: {safe_content}")
 
         # Combine question and story content
         raw_script = f"{self._db_reddit_question}\n\n{story_content}"
@@ -157,7 +161,8 @@ class RedditShortEngine:
                 self._db_script = processed_script
                 print("Script processed successfully")
             except Exception as e:
-                print(f"Error processing script: {e}. Using raw script instead.")
+                print(
+                    f"Error processing script: {e}. Using raw script instead.")
                 self._db_script = raw_script
         else:
             print("Using manual script, skipping GPT processing.")
@@ -166,6 +171,10 @@ class RedditShortEngine:
     def _generateTempAudio(self):
         if not self._db_script:
             raise ValueError("generateScript method must set self._db_script.")
+        if self._db_pre_generated_audio_path and os.path.exists(self._db_pre_generated_audio_path):
+            self._db_temp_audio_path = self._db_pre_generated_audio_path
+            self._db_audio_path = self._db_pre_generated_audio_path
+            return
         if self._db_temp_audio_path:
             return
         self.verifyParameters(text=self._db_script)
@@ -189,7 +198,8 @@ class RedditShortEngine:
         try:
             # First verify the audio file exists
             if not os.path.exists(self._db_audio_path):
-                raise FileNotFoundError(f"Audio file not found: {self._db_audio_path}")
+                raise FileNotFoundError(
+                    f"Audio file not found: {self._db_audio_path}")
 
             # Reset asyncio event loop if it's closed
             try:
@@ -198,7 +208,8 @@ class RedditShortEngine:
                     print("Event loop was closed, creating new one...")
                     asyncio.set_event_loop(asyncio.new_event_loop())
             except Exception as e:
-                print(f"Asyncio setup error: {str(e)}, creating new event loop")
+                print(
+                    f"Asyncio setup error: {str(e)}, creating new event loop")
                 asyncio.set_event_loop(asyncio.new_event_loop())
 
             # Process the audio using Whisper
@@ -241,7 +252,8 @@ class RedditShortEngine:
                 self._db_timed_captions = [
                     ((0, audio_duration), "CAPTIONS UNAVAILABLE")
                 ]
-                print(f"Created fallback caption with duration {audio_duration}s")
+                print(
+                    f"Created fallback caption with duration {audio_duration}s")
             except Exception as e2:
                 print(f"Error creating fallback captions: {str(e2)}")
                 # Last resort - create a generic 30-second caption
@@ -288,10 +300,12 @@ class RedditShortEngine:
             self._db_audio_path, self._db_voiceover_duration = self.getAudioDuration(
                 self._db_audio_path
             )
-            print(f"Voice-over duration: {self._db_voiceover_duration:.2f} seconds")
+            print(
+                f"Voice-over duration: {self._db_voiceover_duration:.2f} seconds")
 
         # Step 2: Check if background video has enough duration
-        print(f"Total video duration: {self._db_background_video_duration:.2f} seconds")
+        print(
+            f"Total video duration: {self._db_background_video_duration:.2f} seconds")
         if self._db_background_video_duration < self._db_voiceover_duration * 1.2:
             raise Exception(
                 f"Background video is too short! Need at least {self._db_voiceover_duration * 1.2:.2f} seconds, but video is {self._db_background_video_duration:.2f} seconds"
@@ -428,7 +442,8 @@ class RedditShortEngine:
                 "question_text": wrapped_title,
             },
         )
-        imageEditingEngine.renderImage(self.dynamicAssetDir + "redditThreadImage.png")
+        imageEditingEngine.renderImage(
+            self.dynamicAssetDir + "redditThreadImage.png")
         self._db_reddit_thread_image = self.dynamicAssetDir + "redditThreadImage.png"
 
     # Reduced from 60 to avoid edge cropping
@@ -523,7 +538,8 @@ class RedditShortEngine:
                 )
                 crop_filter = f"crop={target_width}:{target_height}:{crop_x}:0"
 
-            print(f"Target dimensions after crop: {target_width}x{target_height}")
+            print(
+                f"Target dimensions after crop: {target_width}x{target_height}")
 
             # Always scale to standard 1080x1920 for consistency
             final_width = 1080
@@ -532,7 +548,8 @@ class RedditShortEngine:
             # Create filter chain: crop first, then scale to standard size
             filter_chain = f"{crop_filter},scale={final_width}:{final_height}"
 
-            print(f"Final standardized dimensions: {final_width}x{final_height}")
+            print(
+                f"Final standardized dimensions: {final_width}x{final_height}")
 
             # Use FFmpeg to crop and scale the video
             ffmpeg_cmd = [
@@ -558,7 +575,8 @@ class RedditShortEngine:
 
             # Verify the output
             if not os.path.exists(output_path):
-                raise FileNotFoundError(f"Cropped video was not created: {output_path}")
+                raise FileNotFoundError(
+                    f"Cropped video was not created: {output_path}")
 
             # Verify dimensions of output
             verify_cmd = [
@@ -579,7 +597,8 @@ class RedditShortEngine:
                 if stream["codec_type"] == "video":
                     final_width = int(stream["width"])
                     final_height = int(stream["height"])
-                    print(f"Final video dimensions: {final_width}x{final_height}")
+                    print(
+                        f"Final video dimensions: {final_width}x{final_height}")
 
                     # Check if dimensions match our standard 1080x1920
                     if final_width != 1080 or final_height != 1920:
@@ -592,7 +611,8 @@ class RedditShortEngine:
                         )
                     break
 
-            print(f"Successfully cropped video to 9:16 aspect ratio: {output_path}")
+            print(
+                f"Successfully cropped video to 9:16 aspect ratio: {output_path}")
             return output_path
 
         except subprocess.CalledProcessError as e:
@@ -731,7 +751,8 @@ class RedditShortEngine:
             )
             print(f"Using music: {music_to_use}")
             if not os.path.exists(music_to_use):
-                raise ValueError(f"Background music file not found: {music_to_use}")
+                raise ValueError(
+                    f"Background music file not found: {music_to_use}")
 
             music_audio = AudioFileClip(music_to_use)
             music_duration = music_audio.duration
@@ -751,7 +772,8 @@ class RedditShortEngine:
                 voice_audio = AudioFileClip(self._db_audio_path)
                 voice_audio.close()
                 videoEditor.addEditingStep(
-                    EditingStep.ADD_VOICEOVER_AUDIO, {"url": self._db_audio_path}
+                    EditingStep.ADD_VOICEOVER_AUDIO, {
+                        "url": self._db_audio_path}
                 )
             except Exception as e:
                 print(f"Skipping voiceover audio due to error: {str(e)}")
@@ -851,7 +873,8 @@ class RedditShortEngine:
 
                     # Add essential components only
                     simpleEditor.addEditingStep(
-                        EditingStep.ADD_VOICEOVER_AUDIO, {"url": self._db_audio_path}
+                        EditingStep.ADD_VOICEOVER_AUDIO, {
+                            "url": self._db_audio_path}
                     )
 
                     simpleEditor.addEditingStep(
@@ -913,7 +936,8 @@ class RedditShortEngine:
             self._db_video_path = new_video_path
             print(f"Video saved with timestamp: {new_video_path}")
         else:
-            print(f"Warning: Rendered video not found at {self._db_video_path}")
+            print(
+                f"Warning: Rendered video not found at {self._db_video_path}")
 
         self._db_ready_to_upload = True
 
@@ -921,7 +945,8 @@ class RedditShortEngine:
         """Utility method to verify that required parameters are not None"""
         for key, value in kwargs.items():
             if value is None:
-                raise ValueError(f"Parameter {key} is required but was not provided")
+                raise ValueError(
+                    f"Parameter {key} is required but was not provided")
 
     def get_total_steps(self):
         return len(self.stepDict)

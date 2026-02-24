@@ -30,3 +30,8 @@ fastapi
 uvicorn
 python-dotenv
 httpx
+apscheduler>=3.10.4
+tiktok-uploader>=1.1.15
+google-api-python-client>=2.151.0
+google-auth-oauthlib>=1.2.1
+google-auth-httplib2>=0.2.0

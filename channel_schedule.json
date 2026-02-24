@@ -1,0 +1,48 @@
+{
+  "scheduler": {
+    "timezone": "UTC",
+    "fetch_interval_hours": 24,
+    "daily_fetch_time": "00:10",
+    "daily_publish_times": ["00:30", "08:30", "16:30"]
+  },
+  "shared": {
+    "audio_folder": "assets/audios",
+    "output_root": "output/scheduled"
+  },
+  "channels": [
+    {
+      "id": "yt_channel_1",
+      "platform": "youtube",
+      "enabled": true,
+      "assets": {
+        "video_folder": "assets/videos1"
+      },
+      "youtube": {
+        "client_secrets_file": "secrets/youtube/yt_channel_1_client_secret.json",
+        "token_file": "secrets/youtube/yt_channel_1_token.json",
+        "privacy_status": "public",
+        "category_id": "22",
+        "made_for_kids": false,
+        "schedule_minutes_from_now": 0
+      }
+    },
+    {
+      "id": "tiktok_channel_1",
+      "platform": "tiktok",
+      "enabled": true,
+      "assets": {
+        "video_folder": "assets/videos2"
+      },
+      "tiktok": {
+        "cookies_file": "secrets/tiktok/tiktok_channel_1_cookies.txt",
+        "browser": "chrome",
+        "headless": false,
+        "comment": true,
+        "stitch": true,
+        "duet": true,
+        "product_id": "",
+        "cover": ""
+      }
+    }
+  ]
+}
