@@ -212,6 +212,7 @@ cython_debug/
 client_secret.json
 tokens/
 client_secrets.json
+assets/videos/*
 assets/videos1/*
 assets/videos2/*
 assets/videos3/*
@@ -222,3 +223,4 @@ channel1_output/*
 channel2_output/*
 channel3_output/*
 channel4_output/*
+output/*
