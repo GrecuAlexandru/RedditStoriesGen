@@ -212,6 +212,9 @@ cython_debug/
 client_secret.json
 tokens/
 client_secrets.json
+secrets/**/*.json
+secrets/**/*.txt
+!secrets/.gitkeep
 assets/videos/*
 assets/videos1/*
 assets/videos2/*

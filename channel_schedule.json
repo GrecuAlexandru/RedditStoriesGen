@@ -18,8 +18,56 @@
         "video_folder": "assets/videos1"
       },
       "youtube": {
-        "client_secrets_file": "secrets/youtube/yt_channel_1_client_secret.json",
+        "client_secrets_file": "secrets/youtube/client_secret.json",
         "token_file": "secrets/youtube/yt_channel_1_token.json",
+        "privacy_status": "public",
+        "category_id": "22",
+        "made_for_kids": false,
+        "schedule_minutes_from_now": 0
+      }
+    },
+    {
+      "id": "yt_channel_2",
+      "platform": "youtube",
+      "enabled": true,
+      "assets": {
+        "video_folder": "assets/videos2"
+      },
+      "youtube": {
+        "client_secrets_file": "secrets/youtube/client_secret.json",
+        "token_file": "secrets/youtube/yt_channel_2_token.json",
+        "privacy_status": "public",
+        "category_id": "22",
+        "made_for_kids": false,
+        "schedule_minutes_from_now": 0
+      }
+    },
+    {
+      "id": "yt_channel_3",
+      "platform": "youtube",
+      "enabled": true,
+      "assets": {
+        "video_folder": "assets/videos3"
+      },
+      "youtube": {
+        "client_secrets_file": "secrets/youtube/client_secret.json",
+        "token_file": "secrets/youtube/yt_channel_3_token.json",
+        "privacy_status": "public",
+        "category_id": "22",
+        "made_for_kids": false,
+        "schedule_minutes_from_now": 0
+      }
+    },
+    {
+      "id": "yt_channel_4",
+      "platform": "youtube",
+      "enabled": true,
+      "assets": {
+        "video_folder": "assets/videos4"
+      },
+      "youtube": {
+        "client_secrets_file": "secrets/youtube/client_secret.json",
+        "token_file": "secrets/youtube/yt_channel_4_token.json",
         "privacy_status": "public",
         "category_id": "22",
         "made_for_kids": false,
@@ -31,7 +79,7 @@
       "platform": "tiktok",
       "enabled": true,
       "assets": {
-        "video_folder": "assets/videos2"
+        "video_folder": "assets/videos1"
       },
       "tiktok": {
         "cookies_file": "secrets/tiktok/tiktok_channel_1_cookies.txt",
