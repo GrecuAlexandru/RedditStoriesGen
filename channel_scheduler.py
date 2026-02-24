@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import random
+import time
 from typing import Any, Dict, List, Optional
 
 from scrapper import (
@@ -22,6 +23,17 @@ from ShortGen.engine.reddit_short_engine import RedditShortEngine
 logger = logging.getLogger("ChannelScheduler")
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(levelname)s - %(message)s")
+
+
+def format_elapsed(seconds: float) -> str:
+    total_seconds = max(0, int(seconds))
+    minutes, rem_seconds = divmod(total_seconds, 60)
+    hours, rem_minutes = divmod(minutes, 60)
+    if hours > 0:
+        return f"{hours}h {rem_minutes}m {rem_seconds}s"
+    if rem_minutes > 0:
+        return f"{rem_minutes}m {rem_seconds}s"
+    return f"{rem_seconds}s"
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -261,11 +273,18 @@ def generate_variant_video(
     background_music_path: str,
     output_root: str,
 ) -> str:
+    render_start = time.perf_counter()
     channel_id = channel["id"]
     video_folder = channel["assets"]["video_folder"]
     video_files = list_files(video_folder, (".mp4", ".mov", ".avi", ".mkv"))
     background_video = choose_random_or_raise(
         video_files, f"video files in {video_folder}")
+
+    logger.info(
+        "[%s] Render start (progress: video selection complete, %s candidates)",
+        channel_id,
+        len(video_files),
+    )
 
     short_id = f"run_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}_{channel_id}"
     engine = RedditShortEngine(
@@ -281,7 +300,16 @@ def generate_variant_video(
     )
 
     for step_num, step_info in engine.makeContent():
-        logger.info("[%s] Step %s: %s", channel_id, step_num, step_info)
+        total_steps = engine.get_total_steps()
+        progress_pct = int((step_num / total_steps) * 100)
+        logger.info(
+            "[%s] Step %s/%s (%s%%): %s",
+            channel_id,
+            step_num,
+            total_steps,
+            progress_pct,
+            step_info,
+        )
 
     if not os.path.exists(engine._db_video_path):
         raise FileNotFoundError(
@@ -294,29 +322,54 @@ def generate_variant_video(
     if os.path.exists(final_path):
         os.remove(final_path)
     os.replace(engine._db_video_path, final_path)
+    logger.info(
+        "[%s] Render done in %s -> %s",
+        channel_id,
+        format_elapsed(time.perf_counter() - render_start),
+        final_path,
+    )
     return final_path
 
 
 def build_shared_audio(voice_module: Qwen3VoiceModule, post: Dict[str, Any], output_root: str) -> str:
+    tts_start = time.perf_counter()
     ensure_dir(output_root)
     text = f"{post['title']}\n\n{post['content']}"
     shared_audio_path = os.path.join(output_root, "shared_tts.wav")
     generated_path = voice_module.generate_voice(text, shared_audio_path)
+    logger.info(
+        "Shared audio generated in %s -> %s",
+        format_elapsed(time.perf_counter() - tts_start),
+        generated_path,
+    )
     return generated_path
 
 
 def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True):
+    pipeline_start = time.perf_counter()
+    logger.info("Pipeline started")
     conn = setup_database()
     try:
         post = get_next_queued_post(conn)
         if not post and fetch_if_queue_empty:
             logger.info("Queue empty, fetching fresh posts first...")
+            refill_start = time.perf_counter()
             fetch_and_process_posts(conn)
+            logger.info(
+                "Queue refill fetch completed in %s",
+                format_elapsed(time.perf_counter() - refill_start),
+            )
             post = get_next_queued_post(conn)
 
         if not post:
             logger.warning("No queued posts available after fetch.")
             return
+
+        logger.info(
+            "Pipeline stage 1/4: selected post rowid=%s, title='%s'",
+            post["rowid"],
+            post["title"][:80],
+        )
 
         metadata = get_metadata(post)
         enabled_channels = [
@@ -355,6 +408,12 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
             )
             return
 
+        logger.info(
+            "Pipeline stage 2/4: channels ready (youtube=%s, tiktok=%s)",
+            len(youtube_channels),
+            len(tiktok_channels),
+        )
+
         shared_cfg = config.get("shared", {})
         output_root = shared_cfg.get("output_root", "output/scheduled")
         audio_folder = shared_cfg.get("audio_folder", "assets/audios")
@@ -374,13 +433,22 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
         shared_audio_path = build_shared_audio(
             voice_module, post, post_run_folder)
 
+        logger.info("Pipeline stage 3/4: starting channel render/upload loop")
+
         success_count = 0
         tiktok_uploaded = False
         tiktok_channel = tiktok_channels[0] if tiktok_channels else None
 
         for channel_index, channel in enumerate(youtube_channels):
             channel_id = channel.get("id", "unknown")
+            channel_start = time.perf_counter()
             try:
+                logger.info(
+                    "Channel progress %s/%s: %s",
+                    channel_index + 1,
+                    len(youtube_channels),
+                    channel_id,
+                )
                 variant_video = generate_variant_video(
                     voice_module=voice_module,
                     post=post,
@@ -390,20 +458,26 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                     output_root=post_run_folder,
                 )
 
-                video_id = upload_to_youtube(
-                    channel, variant_video, metadata)
+                upload_start = time.perf_counter()
+                video_id = upload_to_youtube(channel, variant_video, metadata)
                 logger.info(
-                    "Uploaded YouTube channel %s, videoId=%s", channel_id, video_id)
+                    "Uploaded YouTube channel %s, videoId=%s in %s",
+                    channel_id,
+                    video_id,
+                    format_elapsed(time.perf_counter() - upload_start),
+                )
                 success_count += 1
 
                 if channel_index == 0 and tiktok_channel and not tiktok_uploaded:
                     tiktok_channel_id = tiktok_channel.get("id", "unknown")
                     try:
+                        tiktok_start = time.perf_counter()
                         upload_to_tiktok(
                             tiktok_channel, variant_video, metadata)
                         logger.info(
-                            "Uploaded TikTok channel %s using first YouTube video",
+                            "Uploaded TikTok channel %s using first YouTube video in %s",
                             tiktok_channel_id,
+                            format_elapsed(time.perf_counter() - tiktok_start),
                         )
                         success_count += 1
                         tiktok_uploaded = True
@@ -415,6 +489,12 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                         )
             except Exception as exc:
                 logger.exception("Channel %s failed: %s", channel_id, exc)
+            finally:
+                logger.info(
+                    "Channel %s finished in %s",
+                    channel_id,
+                    format_elapsed(time.perf_counter() - channel_start),
+                )
 
         if success_count > 0:
             mark_post_as_used(conn, post["rowid"])
@@ -425,9 +505,14 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                 "No successful uploads for rowid=%s; keeping it unused for retry.", post["rowid"])
     finally:
         conn.close()
+        logger.info(
+            "Pipeline stage 4/4: complete in %s",
+            format_elapsed(time.perf_counter() - pipeline_start),
+        )
 
 
 def run_fetch_job(force: bool = False, fetch_interval_hours: int = 24) -> bool:
+    fetch_start = time.perf_counter()
     conn = setup_database()
     try:
         now_utc = dt.datetime.now(dt.timezone.utc)
@@ -447,12 +532,20 @@ def run_fetch_job(force: bool = False, fetch_interval_hours: int = 24) -> bool:
                     remaining_hours,
                     remaining_minutes,
                 )
+                logger.info(
+                    "Fetch stage finished in %s (skipped)",
+                    format_elapsed(time.perf_counter() - fetch_start),
+                )
                 return False
 
         fetch_and_process_posts(conn)
         set_last_fetch_time(conn, now_utc)
         logger.info("Fetch completed and timestamp updated: %s",
                     now_utc.isoformat())
+        logger.info(
+            "Fetch stage finished in %s",
+            format_elapsed(time.perf_counter() - fetch_start),
+        )
         return True
     finally:
         conn.close()
@@ -532,9 +625,14 @@ def main():
     log_youtube_token_expiry(cfg.get("channels", []))
 
     if args.run_once:
+        run_once_start = time.perf_counter()
         run_fetch_job(force=args.force_fetch,
                       fetch_interval_hours=fetch_interval_hours)
         run_pipeline_once(cfg, fetch_if_queue_empty=False)
+        logger.info(
+            "Run-once finished in %s",
+            format_elapsed(time.perf_counter() - run_once_start),
+        )
         return
 
     start_scheduler(cfg)
