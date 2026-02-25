@@ -797,22 +797,33 @@ def start_scheduler(config: Dict[str, Any]):
     fetch_hour, fetch_minute = parse_hhmm(fetch_time)
 
     scheduler = BlockingScheduler(timezone=timezone)
+    now_utc = dt.datetime.now(dt.timezone.utc)
+
+    fetch_trigger = CronTrigger(
+        hour=fetch_hour, minute=fetch_minute, timezone=timezone)
     scheduler.add_job(
         lambda: run_fetch_job(
             force=False, fetch_interval_hours=fetch_interval_hours),
-        trigger=CronTrigger(
-            hour=fetch_hour, minute=fetch_minute, timezone=timezone),
+        trigger=fetch_trigger,
         id="daily_fetch_posts",
         replace_existing=True,
     )
+
+    next_fetch_run = fetch_trigger.get_next_fire_time(None, now_utc)
+    next_upload_runs: List[tuple[str, Optional[dt.datetime]]] = []
+
     for index, publish_time in enumerate(publish_times):
         publish_hour, publish_minute = parse_hhmm(publish_time)
+        publish_trigger = CronTrigger(
+            hour=publish_hour, minute=publish_minute, timezone=timezone)
         scheduler.add_job(
             lambda: run_pipeline_once(config),
-            trigger=CronTrigger(hour=publish_hour,
-                                minute=publish_minute, timezone=timezone),
+            trigger=publish_trigger,
             id=f"daily_generate_and_upload_{index + 1}",
             replace_existing=True,
+        )
+        next_upload_runs.append(
+            (publish_time, publish_trigger.get_next_fire_time(None, now_utc))
         )
 
     logger.info(
@@ -820,6 +831,15 @@ def start_scheduler(config: Dict[str, Any]):
         fetch_time,
         ", ".join(publish_times),
         timezone,
+    )
+    logger.info(
+        "Next scheduled runs (%s): fetch=%s | uploads=%s",
+        timezone,
+        next_fetch_run.isoformat() if next_fetch_run else "unavailable",
+        ", ".join(
+            f"{publish_time}->{next_run.isoformat() if next_run else 'unavailable'}"
+            for publish_time, next_run in next_upload_runs
+        ),
     )
     scheduler.start()
 

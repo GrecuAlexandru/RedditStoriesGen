@@ -1,9 +1,9 @@
 {
   "scheduler": {
-    "timezone": "UTC",
+    "timezone": "Europe/Bucharest",
     "fetch_interval_hours": 24,
     "daily_fetch_time": "00:10",
-    "daily_publish_times": ["03:00", "09:00", "13:00", "17:00", "20:00"]
+    "daily_publish_times": ["03:00", "09:00", "13:00", "18:00", "20:00"]
   },
   "shared": {
     "audio_folder": "assets/audios",
