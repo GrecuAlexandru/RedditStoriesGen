@@ -350,7 +350,7 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
     uploader = TikTokUploader(
         cookies=tt_cfg["cookies_file"],
         browser=tt_cfg.get("browser", "chrome"),
-        headless=True,
+        headless=False,
     )
 
     kwargs = {
