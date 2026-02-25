@@ -1,6 +1,7 @@
 import datetime
 import datetime
 import os
+import json
 import re
 import shutil
 import random
@@ -279,9 +280,58 @@ class RedditShortEngine:
                 "assets/audios/" + self._db_background_music_name
             )
 
+    def _select_1080x1920_video_from_same_folder(self, current_video_path: str):
+        video_dir = os.path.dirname(current_video_path)
+        if not video_dir or not os.path.isdir(video_dir):
+            return None
+
+        valid_extensions = (".mp4", ".mov", ".avi", ".mkv")
+        candidates = []
+        for filename in os.listdir(video_dir):
+            full_path = os.path.join(video_dir, filename)
+            if not os.path.isfile(full_path):
+                continue
+            if not filename.lower().endswith(valid_extensions):
+                continue
+            try:
+                width, height = self.getVideoDimensions(full_path)
+                if width == 1080 and height == 1920:
+                    candidates.append(full_path)
+            except Exception:
+                continue
+
+        if not candidates:
+            return None
+
+        return random.choice(candidates)
+
     def _chooseBackgroundVideo(self):
         print(f"getting video: {self._db_background_video_name}")
-        self._db_background_video_url = self._db_background_video_name
+        selected_video = self._db_background_video_name
+
+        try:
+            width, height = self.getVideoDimensions(selected_video)
+        except Exception as e:
+            raise Exception(
+                f"Could not inspect background video resolution for '{selected_video}': {e}"
+            )
+
+        if width != 1080 or height != 1920:
+            print(
+                f"Skipping non-1080x1920 background video {selected_video} ({width}x{height})."
+            )
+            replacement = self._select_1080x1920_video_from_same_folder(
+                selected_video)
+            if not replacement:
+                raise Exception(
+                    "No 1080x1920 background video found in the same folder. "
+                    "Please provide 1080x1920 assets."
+                )
+            print(
+                f"Using replacement 1080x1920 background video: {replacement}")
+            selected_video = replacement
+
+        self._db_background_video_url = selected_video
         self._db_background_video_duration = self.getVideoDuration(
             self._db_background_video_url
         )
@@ -373,10 +423,16 @@ class RedditShortEngine:
 
             self._db_background_trimmed = output_path
 
-            cropped_output_path = self.dynamicAssetDir + "clipped_background_9_16.mp4"
-            self._db_background_trimmed = self.crop_to_9_16(
-                output_path, cropped_output_path
-            )
+            trimmed_width, trimmed_height = self.getVideoDimensions(
+                output_path)
+            if trimmed_width == 1080 and trimmed_height == 1920:
+                print("Background clip already 1080x1920; skipping crop step.")
+                self._db_background_trimmed = output_path
+            else:
+                cropped_output_path = self.dynamicAssetDir + "clipped_background_9_16.mp4"
+                self._db_background_trimmed = self.crop_to_9_16(
+                    output_path, cropped_output_path
+                )
 
             # Step 5: Save the music starting point for use in EditingEngine
             max_music_start = music_duration - self._db_voiceover_duration * 1.1
@@ -980,6 +1036,25 @@ class RedditShortEngine:
         duration = clip.duration
         clip.close()
         return duration
+
+    def getVideoDimensions(self, video_path):
+        probe_cmd = [
+            "ffprobe",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            video_path,
+        ]
+        result = subprocess.run(
+            probe_cmd, capture_output=True, text=True, check=True
+        )
+        data = json.loads(result.stdout)
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") == "video":
+                return int(stream["width"]), int(stream["height"])
+        raise ValueError(f"No video stream found in {video_path}")
 
     def getAudioDuration(self, audio_path):
         audio = AudioFileClip(audio_path)
