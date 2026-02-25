@@ -1,6 +1,6 @@
 {
   "scheduler": {
-    "timezone": "UTC",
+    "timezone": "Europe/Bucharest",
     "fetch_interval_hours": 24,
     "daily_fetch_time": "00:10",
     "pregen_interval_minutes": 15,

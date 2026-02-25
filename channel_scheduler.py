@@ -357,7 +357,7 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
     uploader = TikTokUploader(
         cookies=tt_cfg["cookies_file"],
         browser=tt_cfg.get("browser", "chrome"),
-        headless=True,
+        headless=False,
     )
 
     kwargs = {
@@ -396,6 +396,14 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
                         method()
                     except Exception:
                         pass
+
+    if isinstance(upload_result, bool):
+        if not upload_result:
+            raise RuntimeError(
+                "TikTok uploader reported upload failure (returned False). "
+                "Check tiktok_uploader logs above for the exact UI step that failed."
+            )
+        return None
 
     return extract_tiktok_post_link(upload_result)
 
@@ -1157,17 +1165,24 @@ def start_scheduler(config: Dict[str, Any]):
         raise ValueError("No enabled channels found in config.")
 
     scheduler = BlockingScheduler(timezone=timezone)
+<<<<<<< HEAD
 
     # Daily Reddit fetch job (unchanged).
+=======
+    now_utc = dt.datetime.now(dt.timezone.utc)
+
+    fetch_trigger = CronTrigger(
+        hour=fetch_hour, minute=fetch_minute, timezone=timezone)
+>>>>>>> 9bb5a4a1fa546fbb0f1fd4d592131d95409f00dc
     scheduler.add_job(
         lambda: run_fetch_job(
             force=False, fetch_interval_hours=fetch_interval_hours),
-        trigger=CronTrigger(
-            hour=fetch_hour, minute=fetch_minute, timezone=timezone),
+        trigger=fetch_trigger,
         id="daily_fetch_posts",
         replace_existing=True,
     )
 
+<<<<<<< HEAD
     # Pre-generation worker fires every N minutes.
     scheduler.add_job(
         lambda: run_pregen_worker(config),
@@ -1202,12 +1217,39 @@ def start_scheduler(config: Dict[str, Any]):
                 "Registered publish job: channel=%s time=%s (%s)",
                 channel_id, time_str, timezone,
             )
+=======
+    next_fetch_run = fetch_trigger.get_next_fire_time(None, now_utc)
+    next_upload_runs: List[tuple[str, Optional[dt.datetime]]] = []
+
+    for index, publish_time in enumerate(publish_times):
+        publish_hour, publish_minute = parse_hhmm(publish_time)
+        publish_trigger = CronTrigger(
+            hour=publish_hour, minute=publish_minute, timezone=timezone)
+        scheduler.add_job(
+            lambda: run_pipeline_once(config),
+            trigger=publish_trigger,
+            id=f"daily_generate_and_upload_{index + 1}",
+            replace_existing=True,
+        )
+        next_upload_runs.append(
+            (publish_time, publish_trigger.get_next_fire_time(None, now_utc))
+        )
+>>>>>>> 9bb5a4a1fa546fbb0f1fd4d592131d95409f00dc
 
     logger.info(
         "Scheduler started. fetch=%s, pregen_interval=%dm, publish_jobs=%d",
         fetch_time,
         pregen_interval_minutes,
         publish_job_count,
+    )
+    logger.info(
+        "Next scheduled runs (%s): fetch=%s | uploads=%s",
+        timezone,
+        next_fetch_run.isoformat() if next_fetch_run else "unavailable",
+        ", ".join(
+            f"{publish_time}->{next_run.isoformat() if next_run else 'unavailable'}"
+            for publish_time, next_run in next_upload_runs
+        ),
     )
     scheduler.start()
 
