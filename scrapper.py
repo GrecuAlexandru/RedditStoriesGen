@@ -124,6 +124,9 @@ def _ensure_column_exists(cursor: sqlite3.Cursor, table_name: str, column_name: 
 def setup_database():
     """Initializes the SQLite database and creates tables if they don't exist."""
     conn = sqlite3.connect(DB_PATH)
+    # Enable WAL mode for safe concurrent access from the render worker,
+    # fetch job, and publish jobs running in the same APScheduler process.
+    conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -154,6 +157,24 @@ def setup_database():
             key TEXT PRIMARY KEY,
             value TEXT
         )
+    ''')
+
+    # Pre-generation queue: one row per (channel, post) render result.
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS GeneratedVideos (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id  TEXT NOT NULL,
+            post_rowid  INTEGER NOT NULL,
+            subreddit   TEXT NOT NULL,
+            video_path  TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'ready',
+            created_at  TIMESTAMP NOT NULL,
+            uploaded_at TIMESTAMP
+        )
+    ''')
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_gv_channel_status
+        ON GeneratedVideos(channel_id, status)
     ''')
 
     _ensure_column_exists(cursor, "QueuedPosts",
@@ -450,6 +471,194 @@ def mark_post_as_used(conn: sqlite3.Connection, rowid: int):
     cursor.execute(
         "UPDATE QueuedPosts SET usedYet = 1 WHERE rowid = ?", (rowid,))
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# GeneratedVideos helpers (pre-generation queue)
+# ---------------------------------------------------------------------------
+
+def get_posts_in_pregen(conn: sqlite3.Connection) -> set:
+    """Return the set of QueuedPosts rowids that already have at least one
+    row in GeneratedVideos (any status). Used by the render worker to avoid
+    re-rendering posts that are already buffered."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT post_rowid FROM GeneratedVideos")
+    return {row[0] for row in cursor.fetchall()}
+
+
+def get_next_post_for_pregen(
+    conn: sqlite3.Connection,
+    subreddits: list,
+    exclude_rowids: set,
+) -> Optional[dict]:
+    """Pick the highest-scoring unused QueuedPosts row whose subreddit is in
+    *subreddits* and whose rowid is not in *exclude_rowids*."""
+    if not subreddits:
+        return None
+    placeholders = ",".join("?" * len(subreddits))
+    params: list = list(subreddits)
+    exclude_clause = ""
+    if exclude_rowids:
+        ex_placeholders = ",".join("?" * len(exclude_rowids))
+        exclude_clause = f" AND rowid NOT IN ({ex_placeholders})"
+        params.extend(list(exclude_rowids))
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT rowid, title, content, subreddit, score, metadata_json, createdAt
+        FROM QueuedPosts
+        WHERE (usedYet = 0 OR usedYet IS NULL)
+          AND subreddit IN ({placeholders})
+          {exclude_clause}
+        ORDER BY score DESC, createdAt ASC
+        LIMIT 1
+        """,
+        params,
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    try:
+        metadata = json.loads(row[5] or "{}")
+    except Exception:
+        metadata = {}
+    return {
+        "rowid": row[0],
+        "title": row[1],
+        "content": row[2],
+        "subreddit": row[3],
+        "score": row[4],
+        "metadata": metadata,
+        "createdAt": row[6],
+    }
+
+
+def insert_generated_video(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    post_rowid: int,
+    subreddit: str,
+    video_path: str,
+    status: str = "ready",
+) -> int:
+    """Insert a new GeneratedVideos row and return its id."""
+    created_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO GeneratedVideos
+            (channel_id, post_rowid, subreddit, video_path, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (channel_id, post_rowid, subreddit, video_path, status, created_at),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def get_next_ready_video(
+    conn: sqlite3.Connection,
+    channel_id: str,
+    subreddits: list,
+) -> Optional[dict]:
+    """Return the oldest 'ready' GeneratedVideos row for *channel_id* whose
+    subreddit is in *subreddits*, or None if the buffer is empty."""
+    if not subreddits:
+        return None
+    placeholders = ",".join("?" * len(subreddits))
+    cursor = conn.cursor()
+    cursor.execute(
+        f"""
+        SELECT id, channel_id, post_rowid, subreddit, video_path, status, created_at
+        FROM GeneratedVideos
+        WHERE channel_id = ?
+          AND status = 'ready'
+          AND subreddit IN ({placeholders})
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        [channel_id] + list(subreddits),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "channel_id": row[1],
+        "post_rowid": row[2],
+        "subreddit": row[3],
+        "video_path": row[4],
+        "status": row[5],
+        "created_at": row[6],
+    }
+
+
+def mark_video_status(
+    conn: sqlite3.Connection,
+    gv_id: int,
+    status: str,
+    uploaded_at: Optional[datetime.datetime] = None,
+):
+    """Update the status of a GeneratedVideos row."""
+    cursor = conn.cursor()
+    if uploaded_at is not None:
+        cursor.execute(
+            "UPDATE GeneratedVideos SET status = ?, uploaded_at = ? WHERE id = ?",
+            (status, uploaded_at.isoformat(), gv_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE GeneratedVideos SET status = ? WHERE id = ?",
+            (status, gv_id),
+        )
+    conn.commit()
+
+
+def count_buffered_posts(conn: sqlite3.Connection) -> int:
+    """Return the number of unique posts currently in the pre-gen buffer
+    (status 'ready' or 'rendering'). Used to decide whether the render
+    worker needs to generate more content."""
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT COUNT(DISTINCT post_rowid)
+        FROM GeneratedVideos
+        WHERE status IN ('ready', 'rendering')
+        """
+    )
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+
+def cleanup_old_generated_videos(conn: sqlite3.Connection, older_than_hours: int = 48):
+    """Delete GeneratedVideos rows (and their video files) that are in
+    'uploaded' or 'failed' state and are older than *older_than_hours*."""
+    cutoff = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(hours=older_than_hours)
+    ).isoformat()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, video_path FROM GeneratedVideos
+        WHERE status IN ('uploaded', 'failed')
+          AND created_at < ?
+        """,
+        (cutoff,),
+    )
+    rows = cursor.fetchall()
+    deleted_count = 0
+    for gv_id, video_path in rows:
+        if video_path and os.path.exists(video_path):
+            try:
+                os.remove(video_path)
+            except Exception:
+                pass
+        cursor.execute("DELETE FROM GeneratedVideos WHERE id = ?", (gv_id,))
+        deleted_count += 1
+    if deleted_count:
+        conn.commit()
+    return deleted_count
 
 
 def fetch_and_process_posts(conn):

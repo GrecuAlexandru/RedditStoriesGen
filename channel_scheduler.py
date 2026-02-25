@@ -12,10 +12,17 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 from scrapper import (
+    cleanup_old_generated_videos,
+    count_buffered_posts,
     fetch_and_process_posts,
     get_last_fetch_time,
+    get_next_post_for_pregen,
     get_next_queued_post,
+    get_next_ready_video,
+    get_posts_in_pregen,
+    insert_generated_video,
     mark_post_as_used,
+    mark_video_status,
     set_last_fetch_time,
     setup_database,
 )
@@ -767,28 +774,391 @@ def run_fetch_job(force: bool = False, fetch_interval_hours: int = 24) -> bool:
         conn.close()
 
 
+def run_pregen_worker(config: Dict[str, Any]):
+    """System-wide render worker. Keeps a buffer of pre-generated videos
+    in GeneratedVideos. On each run it checks how many unique posts are
+    buffered; if below pregen_buffer it renders more, one post at a time,
+    generating a variant video for every channel whose subreddit list
+    matches the post. TTS audio is generated once per post and shared
+    across all matching channel renders."""
+    worker_start = time.perf_counter()
+    scheduler_cfg = config.get("scheduler", {})
+    shared_cfg = config.get("shared", {})
+    pregen_buffer = int(scheduler_cfg.get("pregen_buffer", 3))
+    output_root = shared_cfg.get("output_root", "output/scheduled")
+    global_audio_folder = shared_cfg.get("audio_folder", "assets/audios")
+
+    enabled_channels = [
+        c for c in config.get("channels", []) if c.get("enabled", True)
+    ]
+    if not enabled_channels:
+        logger.info("[PregenWorker] No enabled channels — skipping.")
+        return
+
+    # Collect the union of all subreddits across all channels so we can
+    # find any relevant post from QueuedPosts in one query.
+    all_subreddits: List[str] = []
+    for ch in enabled_channels:
+        for sr in ch.get("subreddits", []):
+            if sr not in all_subreddits:
+                all_subreddits.append(sr)
+
+    if not all_subreddits:
+        logger.warning(
+            "[PregenWorker] No subreddits configured on any channel — skipping.")
+        return
+
+    conn = setup_database()
+    try:
+        # Run cleanup of stale uploaded/failed rows on every worker tick.
+        cleaned = cleanup_old_generated_videos(conn)
+        if cleaned:
+            logger.info("[PregenWorker] Cleaned up %d stale GeneratedVideos rows.", cleaned)
+
+        buffered = count_buffered_posts(conn)
+        if buffered >= pregen_buffer:
+            logger.info(
+                "[PregenWorker] Buffer full (%d/%d posts). Skipping render.",
+                buffered, pregen_buffer,
+            )
+            return
+
+        logger.info(
+            "[PregenWorker] Buffer at %d/%d — starting render loop.",
+            buffered, pregen_buffer,
+        )
+
+        while buffered < pregen_buffer:
+            exclude_rowids = get_posts_in_pregen(conn)
+            post = get_next_post_for_pregen(conn, all_subreddits, exclude_rowids)
+            if not post:
+                logger.warning(
+                    "[PregenWorker] No unused posts available matching any channel subreddit.")
+                break
+
+            post_rowid = post["rowid"]
+            post_subreddit = post["subreddit"]
+
+            # Find which channels want this post.
+            matching_channels = [
+                ch for ch in enabled_channels
+                if post_subreddit in ch.get("subreddits", [])
+            ]
+            if not matching_channels:
+                logger.warning(
+                    "[PregenWorker] Post rowid=%d subreddit=%s matched no channel — skipping.",
+                    post_rowid, post_subreddit,
+                )
+                # Mark used so this post is not picked again endlessly.
+                mark_post_as_used(conn, post_rowid)
+                break
+
+            logger.info(
+                "[PregenWorker] Pre-generating post rowid=%d '%s' for %d channel(s): %s",
+                post_rowid,
+                post["title"][:60],
+                len(matching_channels),
+                [ch["id"] for ch in matching_channels],
+            )
+
+            # Choose one background music track shared for this post.
+            audio_folder = global_audio_folder
+            background_music_files = list_files(
+                audio_folder, (".mp3", ".wav"))
+            try:
+                background_music = choose_random_or_raise(
+                    background_music_files, f"audio files in {audio_folder}")
+            except FileNotFoundError as exc:
+                logger.error("[PregenWorker] %s", exc)
+                break
+
+            post_run_folder = os.path.join(
+                output_root,
+                dt.datetime.now().strftime("%Y-%m-%d"),
+                f"pregen_{post_rowid}",
+            )
+            ensure_dir(post_run_folder)
+
+            voice_module = Qwen3VoiceModule()
+            shared_audio_path = None
+            render_success = False
+            try:
+                shared_audio_path = build_shared_audio(
+                    voice_module, post, post_run_folder)
+
+                for channel in matching_channels:
+                    channel_id = channel["id"]
+                    # Allow per-channel audio_folder override.
+                    ch_audio_folder = (
+                        channel.get("assets", {}).get("audio_folder")
+                        or global_audio_folder
+                    )
+                    ch_music_files = list_files(
+                        ch_audio_folder, (".mp3", ".wav"))
+                    ch_background_music = background_music
+                    if ch_audio_folder != global_audio_folder and ch_music_files:
+                        try:
+                            ch_background_music = choose_random_or_raise(
+                                ch_music_files,
+                                f"audio files in {ch_audio_folder}",
+                            )
+                        except FileNotFoundError:
+                            pass  # fall back to shared selection
+
+                    try:
+                        video_path = generate_variant_video(
+                            voice_module=voice_module,
+                            post=post,
+                            channel=channel,
+                            shared_tts_audio_path=shared_audio_path,
+                            background_music_path=ch_background_music,
+                            output_root=post_run_folder,
+                        )
+                        insert_generated_video(
+                            conn,
+                            channel_id=channel_id,
+                            post_rowid=post_rowid,
+                            subreddit=post_subreddit,
+                            video_path=video_path,
+                            status="ready",
+                        )
+                        logger.info(
+                            "[PregenWorker] Stored GeneratedVideos entry: channel=%s post_rowid=%d",
+                            channel_id, post_rowid,
+                        )
+                        render_success = True
+                    except Exception as render_exc:
+                        logger.exception(
+                            "[PregenWorker] Render failed for channel %s post_rowid=%d: %s",
+                            channel_id, post_rowid, render_exc,
+                        )
+                        send_event_email(
+                            subject=f"[RedditStoriesGen] PregenWorker render error ({channel_id})",
+                            body=(
+                                f"Status: ERROR\n"
+                                f"Channel: {channel_id}\n"
+                                f"Post rowid: {post_rowid}\n"
+                                f"Title: {post.get('title', '')}\n"
+                                f"Error: {render_exc}\n\n"
+                                f"Traceback:\n{traceback.format_exc()}"
+                            ),
+                        )
+            finally:
+                safe_remove_file(shared_audio_path, "shared TTS audio (pregen)")
+                safe_remove_dir_if_empty(post_run_folder, "pregen post run folder")
+
+            # Mark the post as used so the render worker won't pick it again.
+            mark_post_as_used(conn, post_rowid)
+            if render_success:
+                buffered += 1
+            else:
+                # All channel renders failed for this post — stop trying.
+                break
+
+        logger.info(
+            "[PregenWorker] Done in %s. Buffer now at %d/%d.",
+            format_elapsed(time.perf_counter() - worker_start),
+            count_buffered_posts(conn),
+            pregen_buffer,
+        )
+    except Exception as exc:
+        logger.exception("[PregenWorker] Unhandled error: %s", exc)
+        send_event_email(
+            subject="[RedditStoriesGen] PregenWorker unhandled error",
+            body=(
+                f"Status: ERROR\n"
+                f"Context: run_pregen_worker\n"
+                f"Error: {exc}\n\n"
+                f"Traceback:\n{traceback.format_exc()}"
+            ),
+        )
+    finally:
+        conn.close()
+
+
+def run_channel_publish_job(config: Dict[str, Any], channel: Dict[str, Any]):
+    """Publish job for a single channel. Picks the oldest ready pre-generated
+    video from GeneratedVideos that matches this channel and uploads it.
+    If no video is ready, the slot is skipped and a warning is logged."""
+    publish_start = time.perf_counter()
+    channel_id = channel.get("id", "unknown")
+    platform = channel.get("platform", "").lower().strip()
+    subreddits: List[str] = channel.get("subreddits", [])
+
+    if not subreddits:
+        logger.warning(
+            "[%s] No subreddits configured — skipping publish slot.", channel_id)
+        return
+
+    conn = setup_database()
+    try:
+        gv = get_next_ready_video(conn, channel_id, subreddits)
+        if not gv:
+            logger.warning(
+                "[%s] No pre-generated video ready at publish time — skipping slot.",
+                channel_id,
+            )
+            send_event_email(
+                subject=f"[RedditStoriesGen] Skipped slot — no ready video ({channel_id})",
+                body=(
+                    f"Status: WARNING\n"
+                    f"Channel: {channel_id}\n"
+                    f"Platform: {platform}\n"
+                    f"Reason: GeneratedVideos had no 'ready' row for this channel.\n"
+                    f"Time (UTC): {dt.datetime.now(dt.timezone.utc).isoformat()}"
+                ),
+            )
+            return
+
+        gv_id = gv["id"]
+        video_path = gv["video_path"]
+        post_rowid = gv["post_rowid"]
+
+        if not os.path.exists(video_path):
+            logger.error(
+                "[%s] Video file missing on disk: %s — marking failed.",
+                channel_id, video_path,
+            )
+            mark_video_status(conn, gv_id, "failed")
+            return
+
+        # Fetch post metadata from the DB via rowid for the upload.
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT title, content, subreddit, metadata_json FROM QueuedPosts WHERE rowid = ?",
+            (post_rowid,),
+        )
+        row = cursor.fetchone()
+        if row:
+            try:
+                meta_obj = json.loads(row[3] or "{}")
+            except Exception:
+                meta_obj = {}
+            post_dict = {
+                "rowid": post_rowid,
+                "title": row[0],
+                "content": row[1],
+                "subreddit": row[2],
+                "metadata": meta_obj,
+            }
+            metadata = get_metadata(post_dict)
+        else:
+            # Fallback if the post row is somehow missing.
+            metadata = {
+                "youtube_title": f"Video {post_rowid}",
+                "youtube_description": "",
+                "tiktok_description": "",
+                "hashtags": [],
+            }
+
+        # Mark as uploading to prevent double-upload if a publish job overlaps.
+        mark_video_status(conn, gv_id, "uploading")
+
+        upload_start = time.perf_counter()
+        try:
+            if platform == "youtube":
+                video_id = upload_to_youtube(channel, video_path, metadata)
+                youtube_link = build_youtube_post_link(video_id)
+                logger.info(
+                    "[%s] Uploaded to YouTube videoId=%s in %s",
+                    channel_id, video_id,
+                    format_elapsed(time.perf_counter() - upload_start),
+                )
+                send_event_email(
+                    subject=f"[RedditStoriesGen] Posted to YouTube ({channel_id})",
+                    body=(
+                        f"Status: SUCCESS\n"
+                        f"Platform: YouTube\n"
+                        f"Channel: {channel_id}\n"
+                        f"Video ID: {video_id}\n"
+                        f"Link: {youtube_link or 'Unavailable'}\n"
+                        f"Post rowid: {post_rowid}\n"
+                        f"Title: {metadata.get('youtube_title', '')}\n"
+                        f"Time (UTC): {dt.datetime.now(dt.timezone.utc).isoformat()}"
+                    ),
+                )
+            elif platform == "tiktok":
+                tiktok_link = upload_to_tiktok(channel, video_path, metadata)
+                logger.info(
+                    "[%s] Uploaded to TikTok in %s",
+                    channel_id,
+                    format_elapsed(time.perf_counter() - upload_start),
+                )
+                send_event_email(
+                    subject=f"[RedditStoriesGen] Posted to TikTok ({channel_id})",
+                    body=(
+                        f"Status: SUCCESS\n"
+                        f"Platform: TikTok\n"
+                        f"Channel: {channel_id}\n"
+                        f"Link: {tiktok_link or 'Unavailable'}\n"
+                        f"Post rowid: {post_rowid}\n"
+                        f"Title: {metadata.get('tiktok_description', '')}\n"
+                        f"Time (UTC): {dt.datetime.now(dt.timezone.utc).isoformat()}"
+                    ),
+                )
+            else:
+                logger.error(
+                    "[%s] Unknown platform '%s' — skipping upload.",
+                    channel_id, platform,
+                )
+                mark_video_status(conn, gv_id, "failed")
+                return
+
+            now_utc = dt.datetime.now(dt.timezone.utc)
+            mark_video_status(conn, gv_id, "uploaded", uploaded_at=now_utc)
+            safe_remove_file(video_path, f"uploaded video for {channel_id}")
+
+        except Exception as upload_exc:
+            logger.exception(
+                "[%s] Upload failed: %s", channel_id, upload_exc)
+            mark_video_status(conn, gv_id, "failed")
+            send_event_email(
+                subject=f"[RedditStoriesGen] ERROR uploading ({channel_id})",
+                body=(
+                    f"Status: ERROR\n"
+                    f"Platform: {platform}\n"
+                    f"Channel: {channel_id}\n"
+                    f"Post rowid: {post_rowid}\n"
+                    f"Video path: {video_path}\n"
+                    f"Error: {upload_exc}\n\n"
+                    f"Traceback:\n{traceback.format_exc()}"
+                ),
+            )
+    finally:
+        conn.close()
+        logger.info(
+            "[%s] Publish job finished in %s",
+            channel_id,
+            format_elapsed(time.perf_counter() - publish_start),
+        )
+
+
 def start_scheduler(config: Dict[str, Any]):
     BlockingScheduler = importlib.import_module(
         "apscheduler.schedulers.blocking").BlockingScheduler
     CronTrigger = importlib.import_module(
         "apscheduler.triggers.cron").CronTrigger
+    IntervalTrigger = importlib.import_module(
+        "apscheduler.triggers.interval").IntervalTrigger
 
     scheduler_cfg = config.get("scheduler", {})
-
     timezone = scheduler_cfg.get("timezone", "UTC")
     fetch_time = scheduler_cfg.get("daily_fetch_time", "00:10")
     fetch_interval_hours = int(scheduler_cfg.get("fetch_interval_hours", 24))
-    publish_times = scheduler_cfg.get("daily_publish_times")
-    if not publish_times:
-        publish_times = [scheduler_cfg.get("daily_publish_time", "00:30")]
-
-    if not isinstance(publish_times, list) or not publish_times:
-        raise ValueError(
-            "scheduler.daily_publish_times must be a non-empty list of HH:MM strings")
+    pregen_interval_minutes = int(
+        scheduler_cfg.get("pregen_interval_minutes", 15))
 
     fetch_hour, fetch_minute = parse_hhmm(fetch_time)
 
+    enabled_channels = [
+        c for c in config.get("channels", []) if c.get("enabled", True)
+    ]
+    if not enabled_channels:
+        raise ValueError("No enabled channels found in config.")
+
     scheduler = BlockingScheduler(timezone=timezone)
+
+    # Daily Reddit fetch job (unchanged).
     scheduler.add_job(
         lambda: run_fetch_job(
             force=False, fetch_interval_hours=fetch_interval_hours),
@@ -797,21 +1167,47 @@ def start_scheduler(config: Dict[str, Any]):
         id="daily_fetch_posts",
         replace_existing=True,
     )
-    for index, publish_time in enumerate(publish_times):
-        publish_hour, publish_minute = parse_hhmm(publish_time)
-        scheduler.add_job(
-            lambda: run_pipeline_once(config),
-            trigger=CronTrigger(hour=publish_hour,
-                                minute=publish_minute, timezone=timezone),
-            id=f"daily_generate_and_upload_{index + 1}",
-            replace_existing=True,
-        )
+
+    # Pre-generation worker fires every N minutes.
+    scheduler.add_job(
+        lambda: run_pregen_worker(config),
+        trigger=IntervalTrigger(minutes=pregen_interval_minutes),
+        id="pregen_worker",
+        replace_existing=True,
+    )
+
+    # Per-channel publish jobs.
+    publish_job_count = 0
+    for channel in enabled_channels:
+        channel_id = channel.get("id", "unknown")
+        publish_times: List[str] = channel.get("publish_times", [])
+        if not publish_times:
+            logger.warning(
+                "[%s] No publish_times configured — channel will not post.",
+                channel_id,
+            )
+            continue
+        for time_str in publish_times:
+            pub_hour, pub_minute = parse_hhmm(time_str)
+            job_id = f"publish_{channel_id}_{time_str.replace(':', '')}"
+            scheduler.add_job(
+                lambda ch=channel: run_channel_publish_job(config, ch),
+                trigger=CronTrigger(
+                    hour=pub_hour, minute=pub_minute, timezone=timezone),
+                id=job_id,
+                replace_existing=True,
+            )
+            publish_job_count += 1
+            logger.info(
+                "Registered publish job: channel=%s time=%s (%s)",
+                channel_id, time_str, timezone,
+            )
 
     logger.info(
-        "Scheduler started. Fetch job at %s, upload jobs at %s (%s)",
+        "Scheduler started. fetch=%s, pregen_interval=%dm, publish_jobs=%d",
         fetch_time,
-        ", ".join(publish_times),
-        timezone,
+        pregen_interval_minutes,
+        publish_job_count,
     )
     scheduler.start()
 
@@ -822,9 +1218,11 @@ def main():
     parser.add_argument("--config", default="channel_schedule.json",
                         help="Path to channel schedule JSON")
     parser.add_argument("--run-once", action="store_true",
-                        help="Run fetch+generation+upload once and exit")
+                        help="Run pregen worker + publish once per channel and exit")
     parser.add_argument("--fetch-only", action="store_true",
                         help="Only run fetch_and_process_posts once and exit")
+    parser.add_argument("--pregen-only", action="store_true",
+                        help="Only run the pre-generation worker once and exit")
     parser.add_argument("--force-fetch", action="store_true",
                         help="Force fetch even if last fetch was less than the fetch interval")
     args = parser.parse_args()
@@ -838,13 +1236,22 @@ def main():
                       fetch_interval_hours=fetch_interval_hours)
         return
 
+    if args.pregen_only:
+        run_pregen_worker(cfg)
+        return
+
     log_youtube_token_expiry(cfg.get("channels", []))
 
     if args.run_once:
         run_once_start = time.perf_counter()
         run_fetch_job(force=args.force_fetch,
                       fetch_interval_hours=fetch_interval_hours)
-        run_pipeline_once(cfg, fetch_if_queue_empty=False)
+        run_pregen_worker(cfg)
+        enabled_channels = [
+            c for c in cfg.get("channels", []) if c.get("enabled", True)
+        ]
+        for channel in enabled_channels:
+            run_channel_publish_job(cfg, channel)
         logger.info(
             "Run-once finished in %s",
             format_elapsed(time.perf_counter() - run_once_start),

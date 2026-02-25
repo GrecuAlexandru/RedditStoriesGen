@@ -110,8 +110,8 @@ class CoreEditingEngine:
             codec="libx264",
             audio_codec="aac",
             fps=30,
-            preset="medium",
-            bitrate="8000k"
+            preset="fast",
+            bitrate="5000k"
         )
         return output_file
 

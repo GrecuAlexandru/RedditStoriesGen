@@ -3,7 +3,8 @@
     "timezone": "UTC",
     "fetch_interval_hours": 24,
     "daily_fetch_time": "00:10",
-    "daily_publish_times": ["03:00", "09:00", "13:00", "17:00", "20:00"]
+    "pregen_interval_minutes": 15,
+    "pregen_buffer": 3
   },
   "shared": {
     "audio_folder": "assets/audios",
@@ -14,6 +15,20 @@
       "id": "yt_channel_1",
       "platform": "youtube",
       "enabled": true,
+      "subreddits": [
+        "TrueOffMyChest",
+        "AmItheAsshole",
+        "tifu",
+        "NuclearRevenge",
+        "pettyrevenge"
+      ],
+      "publish_times": [
+        "03:00",
+        "09:00",
+        "13:00",
+        "17:00",
+        "20:00"
+      ],
       "assets": {
         "video_folder": "assets/videos1"
       },
@@ -30,6 +45,20 @@
       "id": "yt_channel_2",
       "platform": "youtube",
       "enabled": true,
+      "subreddits": [
+        "TrueOffMyChest",
+        "AmItheAsshole",
+        "tifu",
+        "NuclearRevenge",
+        "pettyrevenge"
+      ],
+      "publish_times": [
+        "05:00",
+        "11:00",
+        "15:00",
+        "19:00",
+        "22:00"
+      ],
       "assets": {
         "video_folder": "assets/videos2"
       },
@@ -46,6 +75,20 @@
       "id": "yt_channel_3",
       "platform": "youtube",
       "enabled": true,
+      "subreddits": [
+        "TrueOffMyChest",
+        "AmItheAsshole",
+        "tifu",
+        "NuclearRevenge",
+        "pettyrevenge"
+      ],
+      "publish_times": [
+        "07:00",
+        "12:00",
+        "16:00",
+        "18:00",
+        "21:00"
+      ],
       "assets": {
         "video_folder": "assets/videos3"
       },
@@ -62,6 +105,20 @@
       "id": "yt_channel_4",
       "platform": "youtube",
       "enabled": true,
+      "subreddits": [
+        "TrueOffMyChest",
+        "AmItheAsshole",
+        "tifu",
+        "NuclearRevenge",
+        "pettyrevenge"
+      ],
+      "publish_times": [
+        "04:00",
+        "10:00",
+        "14:00",
+        "18:30",
+        "23:00"
+      ],
       "assets": {
         "video_folder": "assets/videos4"
       },
@@ -78,6 +135,17 @@
       "id": "tiktok_channel_1",
       "platform": "tiktok",
       "enabled": true,
+      "subreddits": [
+        "TrueOffMyChest",
+        "AmItheAsshole",
+        "tifu",
+        "NuclearRevenge",
+        "pettyrevenge"
+      ],
+      "publish_times": [
+        "10:00",
+        "18:00"
+      ],
       "assets": {
         "video_folder": "assets/videos1"
       },
