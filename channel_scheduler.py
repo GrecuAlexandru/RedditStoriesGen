@@ -4,6 +4,7 @@ import importlib
 import json
 import os
 import random
+import shutil
 import time
 import traceback
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,42 @@ def extract_tiktok_post_link(upload_result: Any) -> Optional[str]:
             return value
 
     return None
+
+
+def safe_remove_file(file_path: Optional[str], label: str):
+    if not file_path:
+        return
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info("Cleanup: removed %s -> %s", label, file_path)
+    except Exception as exc:
+        logger.warning("Cleanup: failed removing %s (%s): %s",
+                       label, file_path, exc)
+
+
+def safe_remove_dir_if_empty(folder_path: Optional[str], label: str):
+    if not folder_path:
+        return
+    try:
+        if os.path.isdir(folder_path) and not os.listdir(folder_path):
+            os.rmdir(folder_path)
+            logger.info("Cleanup: removed empty %s -> %s", label, folder_path)
+    except Exception as exc:
+        logger.warning("Cleanup: failed removing empty %s (%s): %s",
+                       label, folder_path, exc)
+
+
+def safe_remove_dir_tree(folder_path: Optional[str], label: str):
+    if not folder_path:
+        return
+    try:
+        if os.path.isdir(folder_path):
+            shutil.rmtree(folder_path)
+            logger.info("Cleanup: removed %s -> %s", label, folder_path)
+    except Exception as exc:
+        logger.warning("Cleanup: failed removing %s (%s): %s",
+                       label, folder_path, exc)
 
 
 def format_elapsed(seconds: float) -> str:
@@ -395,6 +432,13 @@ def generate_variant_video(
     if os.path.exists(final_path):
         os.remove(final_path)
     os.replace(engine._db_video_path, final_path)
+
+    if hasattr(engine, "dynamicAssetDir"):
+        safe_remove_dir_tree(
+            getattr(engine, "dynamicAssetDir", None),
+            f"dynamic assets for {channel_id}",
+        )
+
     logger.info(
         "[%s] Render done in %s -> %s",
         channel_id,
@@ -422,6 +466,8 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
     pipeline_start = time.perf_counter()
     logger.info("Pipeline started")
     conn = setup_database()
+    post_run_folder = None
+    shared_audio_path = None
     try:
         post = get_next_queued_post(conn)
         if not post and fetch_if_queue_empty:
@@ -515,6 +561,7 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
         for channel_index, channel in enumerate(youtube_channels):
             channel_id = channel.get("id", "unknown")
             channel_start = time.perf_counter()
+            variant_video = None
             try:
                 logger.info(
                     "Channel progress %s/%s: %s",
@@ -620,6 +667,8 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                     channel_id,
                     format_elapsed(time.perf_counter() - channel_start),
                 )
+                safe_remove_file(
+                    variant_video, f"generated video for {channel_id}")
 
         if success_count > 0:
             mark_post_as_used(conn, post["rowid"])
@@ -642,6 +691,17 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
         )
         raise
     finally:
+        safe_remove_file(shared_audio_path, "shared TTS audio")
+
+        nested_day_folder = None
+        if post_run_folder:
+            nested_day_folder = os.path.join(
+                post_run_folder, dt.datetime.now().strftime("%Y-%m-%d")
+            )
+
+        safe_remove_dir_if_empty(nested_day_folder, "nested post date folder")
+        safe_remove_dir_if_empty(post_run_folder, "post run folder")
+
         conn.close()
         logger.info(
             "Pipeline stage 4/4: complete in %s",
