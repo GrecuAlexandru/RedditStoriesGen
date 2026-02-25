@@ -82,3 +82,28 @@ Create your secrets folders:
 - `secrets/tiktok/`
 
 and keep credentials/cookies there.
+
+## 7) Gmail alerts (post + error notifications)
+
+Scheduler email notifications are sent on:
+
+- successful YouTube upload
+- successful TikTok upload
+- channel upload errors and fatal pipeline errors
+
+Set these environment variables before running:
+
+- `GMAIL_SMTP_USER` = your Gmail address used to send alerts
+- `GMAIL_SMTP_APP_PASSWORD` = Gmail App Password (not your normal password)
+- `EMAIL_NOTIFY_RECIPIENTS` = optional comma-separated recipients
+
+If `EMAIL_NOTIFY_RECIPIENTS` is not set, defaults are:
+
+- `andreizdrali@gmail.com`
+- `alexandru.grecu27@gmail.com`
+
+PowerShell example:
+
+- `$env:GMAIL_SMTP_USER="your_sender@gmail.com"`
+- `$env:GMAIL_SMTP_APP_PASSWORD="your_16_char_app_password"`
+- `$env:EMAIL_NOTIFY_RECIPIENTS="andreizdrali@gmail.com,alexandru.grecu27@gmail.com"`

@@ -2,7 +2,6 @@ import os
 import random
 import shutil
 import asyncio
-import logging
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -10,6 +9,7 @@ from fastapi import FastAPI, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel
 from dotenv import load_dotenv
 import httpx
+from logger_utils import configure_logging
 
 # --- MOVIEPY WINERROR 6 FIX FOR PYTHON 3.13 ---
 import subprocess
@@ -41,10 +41,7 @@ from ShortGen.config.languages import Language
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("FastAPI-Gen")
+logger = configure_logging("FastAPI-Gen")
 
 # Environment constraints
 OUTPUT_FOLDER = os.getenv("OUTPUT_FOLDER", "output")
@@ -55,11 +52,13 @@ if not os.path.exists(OUTPUT_FOLDER):
 job_queue = asyncio.Queue()
 voice_module = None
 
+
 class GenerateRequest(BaseModel):
     title: str
     content: str
     callback_url: str
     short_id: str
+
 
 def get_files_from_folder(folder_path: str, extensions: tuple) -> list[str]:
     if not os.path.exists(folder_path):
@@ -71,6 +70,8 @@ def get_files_from_folder(folder_path: str, extensions: tuple) -> list[str]:
     ]
 
 # The actual synchronous generation logic
+
+
 def generate_video_sync(job: GenerateRequest) -> str:
     """
     Synchronous function that runs the generation pipeline.
@@ -82,7 +83,8 @@ def generate_video_sync(job: GenerateRequest) -> str:
     video_folder = os.path.abspath(os.path.join("assets", "videos"))
     audio_folder = os.path.abspath(os.path.join("assets", "audios"))
 
-    video_files = get_files_from_folder(video_folder, (".mp4", ".mov", ".avi", ".mkv"))
+    video_files = get_files_from_folder(
+        video_folder, (".mp4", ".mov", ".avi", ".mkv"))
     audio_files = get_files_from_folder(audio_folder, (".mp3", ".wav"))
 
     if not video_files:
@@ -117,18 +119,21 @@ def generate_video_sync(job: GenerateRequest) -> str:
             os.makedirs(target_dir)
         final_video_path = os.path.join(target_dir, "video.mp4")
         shutil.move(engine._db_video_path, final_video_path)
-        
+
         # Cleanup dynamic assets
         if hasattr(engine, 'dynamicAssetDir') and os.path.exists(engine.dynamicAssetDir):
             try:
                 shutil.rmtree(engine.dynamicAssetDir)
             except Exception as e:
-                logger.warning(f"Could not clean dynamic directory {engine.dynamicAssetDir}: {e}")
-                
+                logger.warning(
+                    f"Could not clean dynamic directory {engine.dynamicAssetDir}: {e}")
+
         logger.info(f"[{job.short_id}] Video saved to {final_video_path}")
         return final_video_path
     else:
-        raise FileNotFoundError("Video generation finished, but output file not found.")
+        raise FileNotFoundError(
+            "Video generation finished, but output file not found.")
+
 
 async def send_webhook(url: str, payload: dict):
     """Sends a POST request to the callback URL."""
@@ -140,6 +145,7 @@ async def send_webhook(url: str, payload: dict):
     except Exception as e:
         logger.error(f"Failed to send webhook to {url}: {e}")
 
+
 async def process_queue():
     """Background worker that processes jobs ONE at a time."""
     logger.info("Background worker started. Waiting for jobs...")
@@ -147,18 +153,18 @@ async def process_queue():
         job: GenerateRequest = await job_queue.get()
         try:
             logger.info(f"Processing job {job.short_id} from queue...")
-            
+
             # Run the heavy synchronous workload in a separate thread
             # so it doesn't block the FastAPI event loop
             final_video_path = await asyncio.to_thread(generate_video_sync, job)
-            
+
             # Send success webhook
             await send_webhook(job.callback_url, {
                 "status": "success",
                 "short_id": job.short_id,
                 "video_path": final_video_path
             })
-            
+
         except Exception as e:
             logger.error(f"Job {job.short_id} failed: {e}")
             import traceback
@@ -168,7 +174,7 @@ async def process_queue():
                 logger_utils.log_error(e)
             except:
                 pass
-            
+
             # Send failure webhook
             await send_webhook(job.callback_url, {
                 "status": "failed",
@@ -177,13 +183,15 @@ async def process_queue():
             })
         finally:
             job_queue.task_done()
-            logger.info(f"Finished processing job {job.short_id}. Waiting for next...")
+            logger.info(
+                f"Finished processing job {job.short_id}. Waiting for next...")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Initialize TTS and start the background worker
     global voice_module
-    
+
     if Qwen3VoiceModule is None:
         logger.error("Qwen3-TTS module not found. Generation will fail.")
     else:
@@ -194,14 +202,15 @@ async def lifespan(app: FastAPI):
 
     # Start the worker task
     task = asyncio.create_task(process_queue())
-    
+
     yield
-    
+
     # Shutdown
     task.cancel()
     logger.info("Shutting down background worker.")
 
 app = FastAPI(title="Reddit Video Gen API", lifespan=lifespan)
+
 
 @app.post("/generate", status_code=status.HTTP_202_ACCEPTED)
 async def generate_video(request: GenerateRequest):
@@ -210,7 +219,8 @@ async def generate_video(request: GenerateRequest):
     Ensures single concurrency.
     """
     await job_queue.put(request)
-    logger.info(f"Job {request.short_id} added to the queue. Current queue size: {job_queue.qsize()}")
+    logger.info(
+        f"Job {request.short_id} added to the queue. Current queue size: {job_queue.qsize()}")
     return {
         "status": "accepted",
         "short_id": request.short_id,

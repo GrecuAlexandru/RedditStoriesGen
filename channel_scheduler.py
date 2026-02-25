@@ -2,11 +2,13 @@ import argparse
 import datetime as dt
 import importlib
 import json
-import logging
 import os
 import random
 import time
+import traceback
 from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
 
 from scrapper import (
     fetch_and_process_posts,
@@ -19,10 +21,15 @@ from scrapper import (
 from ShortGen.audio.qwen3_voice_module import Qwen3VoiceModule
 from ShortGen.config.languages import Language
 from ShortGen.engine.reddit_short_engine import RedditShortEngine
+from logger_utils import configure_logging
+from notification_utils import send_gmail_notification
 
-logger = logging.getLogger("ChannelScheduler")
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s - %(levelname)s - %(message)s")
+logger = configure_logging("ChannelScheduler")
+load_dotenv()
+
+
+def send_event_email(subject: str, body: str):
+    send_gmail_notification(subject=subject, body=body)
 
 
 def format_elapsed(seconds: float) -> str:
@@ -245,7 +252,7 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
     uploader = TikTokUploader(
         cookies=tt_cfg["cookies_file"],
         browser=tt_cfg.get("browser", "chrome"),
-        headless=bool(tt_cfg.get("headless", False)),
+        headless=True,
     )
 
     kwargs = {
@@ -261,7 +268,29 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
     if tt_cfg.get("cover"):
         kwargs["cover"] = tt_cfg["cover"]
 
-    uploader.upload_video(video_path, **kwargs)
+    try:
+        uploader.upload_video(video_path, **kwargs)
+    finally:
+        for method_name in ("close", "quit"):
+            method = getattr(uploader, method_name, None)
+            if callable(method):
+                try:
+                    method()
+                except Exception:
+                    pass
+
+        for attr_name in ("browser", "driver"):
+            obj = getattr(uploader, attr_name, None)
+            if obj is None:
+                continue
+            for method_name in ("close", "quit"):
+                method = getattr(obj, method_name, None)
+                if callable(method):
+                    try:
+                        method()
+                    except Exception:
+                        pass
+
     return True
 
 
@@ -466,6 +495,19 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                     video_id,
                     format_elapsed(time.perf_counter() - upload_start),
                 )
+                send_event_email(
+                    subject=f"[RedditStoriesGen] Posted to YouTube ({channel_id})",
+                    body=(
+                        f"Status: SUCCESS\n"
+                        f"Platform: YouTube\n"
+                        f"Channel: {channel_id}\n"
+                        f"Video ID: {video_id}\n"
+                        f"Post rowid: {post.get('rowid')}\n"
+                        f"Title: {post.get('title', '')}\n"
+                        f"Generated video: {variant_video}\n"
+                        f"Time (UTC): {dt.datetime.now(dt.timezone.utc).isoformat()}"
+                    ),
+                )
                 success_count += 1
 
                 if channel_index == 0 and tiktok_channel and not tiktok_uploaded:
@@ -479,6 +521,18 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                             tiktok_channel_id,
                             format_elapsed(time.perf_counter() - tiktok_start),
                         )
+                        send_event_email(
+                            subject=f"[RedditStoriesGen] Posted to TikTok ({tiktok_channel_id})",
+                            body=(
+                                f"Status: SUCCESS\n"
+                                f"Platform: TikTok\n"
+                                f"Channel: {tiktok_channel_id}\n"
+                                f"Post rowid: {post.get('rowid')}\n"
+                                f"Title: {post.get('title', '')}\n"
+                                f"Reused video: {variant_video}\n"
+                                f"Time (UTC): {dt.datetime.now(dt.timezone.utc).isoformat()}"
+                            ),
+                        )
                         success_count += 1
                         tiktok_uploaded = True
                     except Exception as tiktok_exc:
@@ -487,8 +541,32 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                             tiktok_channel_id,
                             tiktok_exc,
                         )
+                        send_event_email(
+                            subject=f"[RedditStoriesGen] ERROR on TikTok ({tiktok_channel_id})",
+                            body=(
+                                f"Status: ERROR\n"
+                                f"Platform: TikTok\n"
+                                f"Channel: {tiktok_channel_id}\n"
+                                f"Post rowid: {post.get('rowid')}\n"
+                                f"Title: {post.get('title', '')}\n"
+                                f"Error: {tiktok_exc}\n\n"
+                                f"Traceback:\n{traceback.format_exc()}"
+                            ),
+                        )
             except Exception as exc:
                 logger.exception("Channel %s failed: %s", channel_id, exc)
+                send_event_email(
+                    subject=f"[RedditStoriesGen] ERROR on YouTube ({channel_id})",
+                    body=(
+                        f"Status: ERROR\n"
+                        f"Platform: YouTube\n"
+                        f"Channel: {channel_id}\n"
+                        f"Post rowid: {post.get('rowid')}\n"
+                        f"Title: {post.get('title', '')}\n"
+                        f"Error: {exc}\n\n"
+                        f"Traceback:\n{traceback.format_exc()}"
+                    ),
+                )
             finally:
                 logger.info(
                     "Channel %s finished in %s",
@@ -503,6 +581,19 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
         else:
             logger.warning(
                 "No successful uploads for rowid=%s; keeping it unused for retry.", post["rowid"])
+    except Exception as pipeline_exc:
+        logger.exception(
+            "Pipeline failed with an unhandled error: %s", pipeline_exc)
+        send_event_email(
+            subject="[RedditStoriesGen] ERROR in pipeline",
+            body=(
+                f"Status: ERROR\n"
+                f"Context: run_pipeline_once\n"
+                f"Error: {pipeline_exc}\n\n"
+                f"Traceback:\n{traceback.format_exc()}"
+            ),
+        )
+        raise
     finally:
         conn.close()
         logger.info(
@@ -639,4 +730,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as main_exc:
+        send_event_email(
+            subject="[RedditStoriesGen] FATAL scheduler error",
+            body=(
+                f"Status: FATAL\n"
+                f"Error: {main_exc}\n\n"
+                f"Traceback:\n{traceback.format_exc()}"
+            ),
+        )
+        raise
