@@ -390,6 +390,14 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
                     except Exception:
                         pass
 
+    if isinstance(upload_result, bool):
+        if not upload_result:
+            raise RuntimeError(
+                "TikTok uploader reported upload failure (returned False). "
+                "Check tiktok_uploader logs above for the exact UI step that failed."
+            )
+        return None
+
     return extract_tiktok_post_link(upload_result)
 
 
