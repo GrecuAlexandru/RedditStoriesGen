@@ -120,6 +120,17 @@ def log_youtube_token_expiry(channels: List[Dict[str, Any]]):
         if seconds_left <= 0:
             logger.warning("[%s] YouTube access token expired at %s",
                            channel_id, expiry_utc.isoformat())
+            send_event_email(
+                subject=f"[RedditStoriesGen] YouTube token expired ({channel_id})",
+                body=(
+                    f"Status: WARNING\n"
+                    f"Platform: YouTube\n"
+                    f"Channel: {channel_id}\n"
+                    f"Token file: {token_file}\n"
+                    f"Expired at (UTC): {expiry_utc.isoformat()}\n"
+                    f"Detected at (UTC): {now_utc.isoformat()}"
+                ),
+            )
         else:
             hours = int(seconds_left // 3600)
             minutes = int((seconds_left % 3600) // 60)
