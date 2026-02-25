@@ -16,7 +16,7 @@ To control how many times per day it posts, set:
 - `scheduler.daily_publish_times`: list of `HH:MM` values
 - Number of entries = number of post cycles per day
 
-Example: `"daily_publish_times": ["00:30", "08:30", "16:30"]` means 3 post runs/day.
+Example: `"daily_publish_times": ["03:00", "09:00", "13:00", "17:00", "20:00"]` means 5 post runs/day.
 
 Backward compatibility: `daily_publish_time` (single value) is still supported.
 
