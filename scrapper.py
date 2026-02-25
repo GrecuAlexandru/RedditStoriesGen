@@ -16,7 +16,7 @@ ABBREVIATIONS_PATH = os.path.join(
     os.path.dirname(__file__), "abbreviations.json")
 
 MIN_LENGTH = 500
-MAX_LENGTH = 3000
+MAX_LENGTH = 2000
 
 REMOVAL_STRINGS = {
     '[removed]',
