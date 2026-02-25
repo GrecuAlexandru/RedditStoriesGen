@@ -3,10 +3,10 @@ import argparse
 import random
 import shutil
 from typing import List, Dict
-import logging
 
 # --- MOVIEPY WINERROR 6 FIX FOR PYTHON 3.13 ---
 import subprocess
+from logger_utils import configure_logging
 
 try:
     from moviepy.audio.io.readers import FFMPEG_AudioReader
@@ -32,10 +32,7 @@ from ShortGen.engine.reddit_short_engine import RedditShortEngine
 from ShortGen.config.languages import Language
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("LocalGen")
+logger = configure_logging("LocalGen")
 
 QWEN_TTS = "Qwen3-TTS (Local Model High Quality)"
 
@@ -97,7 +94,8 @@ def get_files_from_folder(folder_path: str, extensions: tuple) -> List[str]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate Reddit videos locally")
+    parser = argparse.ArgumentParser(
+        description="Generate Reddit videos locally")
     parser.add_argument(
         "--video_folder",
         type=str,
@@ -119,7 +117,8 @@ def main():
         default="output",
         help="Output folder for generated videos",
     )
-    parser.add_argument("-N", type=int, default=1, help="Number of videos to generate")
+    parser.add_argument("-N", type=int, default=1,
+                        help="Number of videos to generate")
     parser.add_argument(
         "--tts_engine",
         type=str,
@@ -218,9 +217,11 @@ def main():
                 if not os.path.exists(target_dir):
                     os.makedirs(target_dir)
                 shutil.move(
-                    engine._db_video_path, os.path.join(target_dir, "video.mp4")
+                    engine._db_video_path, os.path.join(
+                        target_dir, "video.mp4")
                 )
-                logger.info(f"Video saved to {os.path.join(target_dir, 'video.mp4')}")
+                logger.info(
+                    f"Video saved to {os.path.join(target_dir, 'video.mp4')}")
             else:
                 logger.error("Video generation failed, output not found.")
 
