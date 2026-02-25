@@ -32,6 +32,38 @@ def send_event_email(subject: str, body: str):
     send_gmail_notification(subject=subject, body=body)
 
 
+def build_youtube_post_link(video_id: Optional[str]) -> Optional[str]:
+    if not video_id:
+        return None
+    return f"https://www.youtube.com/shorts/{video_id}"
+
+
+def extract_tiktok_post_link(upload_result: Any) -> Optional[str]:
+    if isinstance(upload_result, str):
+        normalized = upload_result.strip()
+        if normalized.startswith("http://") or normalized.startswith("https://"):
+            return normalized
+
+    if isinstance(upload_result, dict):
+        for key in ("url", "video_url", "share_url", "link"):
+            value = upload_result.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                return value
+
+    if isinstance(upload_result, (list, tuple)):
+        for item in upload_result:
+            candidate = extract_tiktok_post_link(item)
+            if candidate:
+                return candidate
+
+    for attr in ("url", "video_url", "share_url", "link"):
+        value = getattr(upload_result, attr, None)
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            return value
+
+    return None
+
+
 def format_elapsed(seconds: float) -> str:
     total_seconds = max(0, int(seconds))
     minutes, rem_seconds = divmod(total_seconds, 60)
@@ -279,8 +311,9 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
     if tt_cfg.get("cover"):
         kwargs["cover"] = tt_cfg["cover"]
 
+    upload_result = None
     try:
-        uploader.upload_video(video_path, **kwargs)
+        upload_result = uploader.upload_video(video_path, **kwargs)
     finally:
         for method_name in ("close", "quit"):
             method = getattr(uploader, method_name, None)
@@ -302,7 +335,7 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
                     except Exception:
                         pass
 
-    return True
+    return extract_tiktok_post_link(upload_result)
 
 
 def generate_variant_video(
@@ -506,6 +539,7 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                     video_id,
                     format_elapsed(time.perf_counter() - upload_start),
                 )
+                youtube_link = build_youtube_post_link(video_id)
                 send_event_email(
                     subject=f"[RedditStoriesGen] Posted to YouTube ({channel_id})",
                     body=(
@@ -513,6 +547,7 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                         f"Platform: YouTube\n"
                         f"Channel: {channel_id}\n"
                         f"Video ID: {video_id}\n"
+                        f"Link: {youtube_link or 'Unavailable'}\n"
                         f"Post rowid: {post.get('rowid')}\n"
                         f"Title: {post.get('title', '')}\n"
                         f"Generated video: {variant_video}\n"
@@ -525,7 +560,7 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                     tiktok_channel_id = tiktok_channel.get("id", "unknown")
                     try:
                         tiktok_start = time.perf_counter()
-                        upload_to_tiktok(
+                        tiktok_link = upload_to_tiktok(
                             tiktok_channel, variant_video, metadata)
                         logger.info(
                             "Uploaded TikTok channel %s using first YouTube video in %s",
@@ -538,6 +573,7 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                                 f"Status: SUCCESS\n"
                                 f"Platform: TikTok\n"
                                 f"Channel: {tiktok_channel_id}\n"
+                                f"Link: {tiktok_link or 'Unavailable (TikTok uploader did not return a public URL)'}\n"
                                 f"Post rowid: {post.get('rowid')}\n"
                                 f"Title: {post.get('title', '')}\n"
                                 f"Reused video: {variant_video}\n"
