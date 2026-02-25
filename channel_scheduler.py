@@ -179,6 +179,7 @@ def log_youtube_token_expiry(channels: List[Dict[str, Any]]):
             continue
 
         expiry_raw = token_data.get("expiry")
+        has_refresh_token = bool(token_data.get("refresh_token"))
         expiry_utc = parse_iso_datetime(expiry_raw)
         if not expiry_utc:
             logger.warning(
@@ -187,29 +188,46 @@ def log_youtube_token_expiry(channels: List[Dict[str, Any]]):
 
         seconds_left = (expiry_utc - now_utc).total_seconds()
         if seconds_left <= 0:
-            logger.warning("[%s] YouTube access token expired at %s",
-                           channel_id, expiry_utc.isoformat())
-            send_event_email(
-                subject=f"[RedditStoriesGen] YouTube token expired ({channel_id})",
-                body=(
-                    f"Status: WARNING\n"
-                    f"Platform: YouTube\n"
-                    f"Channel: {channel_id}\n"
-                    f"Token file: {token_file}\n"
-                    f"Expired at (UTC): {expiry_utc.isoformat()}\n"
-                    f"Detected at (UTC): {now_utc.isoformat()}"
-                ),
-            )
+            if has_refresh_token:
+                logger.info(
+                    "[%s] YouTube access token expired at %s, but refresh_token exists (auto-refresh expected).",
+                    channel_id,
+                    expiry_utc.isoformat(),
+                )
+            else:
+                logger.warning("[%s] YouTube access token expired at %s and no refresh_token found.",
+                               channel_id, expiry_utc.isoformat())
+                send_event_email(
+                    subject=f"[RedditStoriesGen] YouTube token expired ({channel_id})",
+                    body=(
+                        f"Status: WARNING\n"
+                        f"Platform: YouTube\n"
+                        f"Channel: {channel_id}\n"
+                        f"Token file: {token_file}\n"
+                        f"Expired at (UTC): {expiry_utc.isoformat()}\n"
+                        f"Detected at (UTC): {now_utc.isoformat()}\n"
+                        f"refresh_token: missing"
+                    ),
+                )
         else:
             hours = int(seconds_left // 3600)
             minutes = int((seconds_left % 3600) // 60)
-            logger.info(
-                "[%s] YouTube access token expires at %s (in %dh %dm)",
-                channel_id,
-                expiry_utc.isoformat(),
-                hours,
-                minutes,
-            )
+            if has_refresh_token:
+                logger.info(
+                    "[%s] YouTube access token expires at %s (in %dh %dm). refresh_token present (auto-refresh enabled).",
+                    channel_id,
+                    expiry_utc.isoformat(),
+                    hours,
+                    minutes,
+                )
+            else:
+                logger.warning(
+                    "[%s] YouTube access token expires at %s (in %dh %dm) and no refresh_token found.",
+                    channel_id,
+                    expiry_utc.isoformat(),
+                    hours,
+                    minutes,
+                )
 
 
 def choose_random_or_raise(items: List[str], label: str) -> str:
