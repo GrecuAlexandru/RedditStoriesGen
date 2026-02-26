@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SUBREDDITS = ["TrueOffMyChest", "AmItheAsshole",
-              "tifu", "NuclearRevenge", "pettyrevenge"]
+              "NuclearRevenge", "pettyrevenge"]
 DB_PATH = os.path.join(os.path.dirname(__file__), "posts.db")
 ABBREVIATIONS_PATH = os.path.join(
     os.path.dirname(__file__), "abbreviations.json")
