@@ -1,4 +1,6 @@
 import argparse
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
 import importlib
 import json
@@ -339,7 +341,7 @@ def upload_to_youtube(channel: Dict[str, Any], video_path: str, metadata: Dict[s
     return response.get("id")
 
 
-def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[str, Any]):
+def _upload_to_tiktok_sync(channel: Dict[str, Any], video_path: str, metadata: Dict[str, Any]):
     try:
         TikTokUploader = importlib.import_module(
             "tiktok_uploader.upload").TikTokUploader
@@ -399,6 +401,21 @@ def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[st
         return None
 
     return extract_tiktok_post_link(upload_result)
+
+
+def upload_to_tiktok(channel: Dict[str, Any], video_path: str, metadata: Dict[str, Any]):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return _upload_to_tiktok_sync(channel, video_path, metadata)
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tiktok-upload") as executor:
+        return executor.submit(
+            _upload_to_tiktok_sync,
+            channel,
+            video_path,
+            metadata,
+        ).result()
 
 
 def generate_variant_video(
