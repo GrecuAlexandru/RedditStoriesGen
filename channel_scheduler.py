@@ -629,21 +629,6 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                     video_id,
                     format_elapsed(time.perf_counter() - upload_start),
                 )
-                youtube_link = build_youtube_post_link(video_id)
-                send_event_email(
-                    subject=f"[RedditStoriesGen] Posted to YouTube ({channel_id})",
-                    body=(
-                        f"Status: SUCCESS\n"
-                        f"Platform: YouTube\n"
-                        f"Channel: {channel_id}\n"
-                        f"Video ID: {video_id}\n"
-                        f"Link: {youtube_link or 'Unavailable'}\n"
-                        f"Post rowid: {post.get('rowid')}\n"
-                        f"Title: {post.get('title', '')}\n"
-                        f"Generated video: {variant_video}\n"
-                        f"Time (UTC): {dt.datetime.now(dt.timezone.utc).isoformat()}"
-                    ),
-                )
                 success_count += 1
 
                 if channel_index == 0 and tiktok_channel and not tiktok_uploaded:
@@ -656,19 +641,6 @@ def run_pipeline_once(config: Dict[str, Any], fetch_if_queue_empty: bool = True)
                             "Uploaded TikTok channel %s using first YouTube video in %s",
                             tiktok_channel_id,
                             format_elapsed(time.perf_counter() - tiktok_start),
-                        )
-                        send_event_email(
-                            subject=f"[RedditStoriesGen] Posted to TikTok ({tiktok_channel_id})",
-                            body=(
-                                f"Status: SUCCESS\n"
-                                f"Platform: TikTok\n"
-                                f"Channel: {tiktok_channel_id}\n"
-                                f"Link: {tiktok_link or 'Unavailable (TikTok uploader did not return a public URL)'}\n"
-                                f"Post rowid: {post.get('rowid')}\n"
-                                f"Title: {post.get('title', '')}\n"
-                                f"Reused video: {variant_video}\n"
-                                f"Time (UTC): {dt.datetime.now(dt.timezone.utc).isoformat()}"
-                            ),
                         )
                         success_count += 1
                         tiktok_uploaded = True
